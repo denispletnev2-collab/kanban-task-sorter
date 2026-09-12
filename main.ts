@@ -11,6 +11,7 @@ interface TaskSorterSettings {
   sortHeading: string;   // название лейна-приёмника в обоих файлах
   excludePaths: string;  // папки/файлы через запятую, которые не сканируем
   topLevelOnly: boolean; // сортировать только задачи верхнего уровня (без отступа)
+  sortInsertedTasks: boolean; // сортировать содержимое лейна Sort после вставки
   scanCache: Record<string, FileCacheEntry>; // path -> данные последнего скана
 }
 
@@ -20,6 +21,7 @@ const DEFAULT_SETTINGS: TaskSorterSettings = {
   sortHeading: "## Sort",
   excludePaths: "",
   topLevelOnly: true,
+  sortInsertedTasks: true,
   scanCache: {},
 };
 
@@ -44,6 +46,43 @@ interface TargetValidation {
   reason?: string;
 }
 
+type SortMode = "date" | "alpha";
+
+// Извлекает первую дату вида YYYY-MM-DD из текста задачи (после 📅, ⏳ или 🛫), для сортировки.
+// Возвращает null, если дата не найдена (например, только 🔁 без явной даты) — такие задачи
+// уходят в конец списка при сортировке.
+function extractSortDate(text: string): string | null {
+  const m = text.match(/[📅⏳🛫]\s*(\d{4}-\d{2}-\d{2})/u);
+  return m ? m[1] : null;
+}
+
+// Убирает "- [ ] " в начале для сравнения текста при алфавитной сортировке
+function stripCheckbox(text: string): string {
+  return text.replace(/^-\s\[ \]\s*/, "").trim();
+}
+
+function sortLaneContent(lines: string[], mode: SortMode): string[] {
+  const withIndex = lines.map((line, idx) => ({ line, idx }));
+
+  withIndex.sort((a, b) => {
+    if (mode === "date") {
+      const da = extractSortDate(a.line);
+      const db = extractSortDate(b.line);
+      if (da && db) return da.localeCompare(db);
+      if (da && !db) return -1; // с датой — выше задач без даты
+      if (!da && db) return 1;
+      return a.idx - b.idx; // обе без даты — сохраняем исходный порядок
+    } else {
+      const ta = stripCheckbox(a.line);
+      const tb = stripCheckbox(b.line);
+      const cmp = ta.localeCompare(tb, "ru");
+      return cmp !== 0 ? cmp : a.idx - b.idx;
+    }
+  });
+
+  return withIndex.map((w) => w.line);
+}
+
 export default class TaskSorterPlugin extends Plugin {
   settings: TaskSorterSettings;
 
@@ -60,6 +99,12 @@ export default class TaskSorterPlugin extends Plugin {
       id: "sort-tasks-reset-cache",
       name: "Сбросить кэш сканирования",
       callback: () => this.resetScanCache(),
+    });
+
+    this.addCommand({
+      id: "sort-tasks-cleanup-cache",
+      name: "Очистить кэш от удалённых файлов",
+      callback: () => this.cleanupCache(),
     });
 
     this.addRibbonIcon("list-checks", "Разобрать задачи текущего файла", () => {
@@ -125,8 +170,36 @@ export default class TaskSorterPlugin extends Plugin {
     return { ok: true };
   }
 
+  // ---------- Убирает из кэша записи о файлах, которых больше нет в хранилище ----------
+  private pruneMissingFilesFromCache(): number {
+    let removed = 0;
+    for (const path of Object.keys(this.settings.scanCache)) {
+      const file = this.app.vault.getAbstractFileByPath(path);
+      if (!(file instanceof TFile)) {
+        delete this.settings.scanCache[path];
+        removed++;
+      }
+    }
+    return removed;
+  }
+
+  async cleanupCache() {
+    const removed = this.pruneMissingFilesFromCache();
+    await this.saveSettings();
+    new Notice(
+      removed > 0
+        ? `Task Sorter: из кэша удалено записей о ${removed} несуществующих файлах.`
+        : "Task Sorter: в кэше нет записей об удалённых файлах, чистить нечего."
+    );
+  }
+
   // ---------- Режим 1: полный скан хранилища, пропускает файлы, не менявшиеся с прошлого скана ----------
   async sortTasksFullScan() {
+    const prunedCount = this.pruneMissingFilesFromCache();
+    if (prunedCount > 0) {
+      await this.saveSettings();
+    }
+
     const excludeList = this.getExcludeList();
     const allFiles = this.app.vault.getMarkdownFiles().filter((f) => !this.isExcluded(f, excludeList));
 
@@ -204,13 +277,15 @@ export default class TaskSorterPlugin extends Plugin {
       if (collection.life.length > 0) {
         lifeResult = await this.appendToSort(
           this.settings.lifeFile,
-          collection.life.map((t) => t.text)
+          collection.life.map((t) => t.text),
+          "alpha"
         );
       }
       if (collection.dated.length > 0) {
         datedResult = await this.appendToSort(
           this.settings.datedFile,
-          collection.dated.map((t) => t.text)
+          collection.dated.map((t) => t.text),
+          "date"
         );
       }
     } catch (e) {
@@ -310,7 +385,8 @@ export default class TaskSorterPlugin extends Plugin {
   // или одинаковой задачи в двух разных заметках-источниках.
   private async appendToSort(
     filePath: string,
-    newTasks: string[]
+    newTasks: string[],
+    sortMode: SortMode
   ): Promise<{ added: string[]; duplicates: string[] }> {
     const file = this.app.vault.getAbstractFileByPath(filePath);
     if (!(file instanceof TFile)) {
@@ -366,7 +442,10 @@ export default class TaskSorterPlugin extends Plugin {
       laneLines.pop();
     }
 
-    const newLaneContent = [...laneLines, ...added];
+    let newLaneContent = [...laneLines, ...added];
+    if (this.settings.sortInsertedTasks) {
+      newLaneContent = sortLaneContent(newLaneContent, sortMode);
+    }
 
     const before = lines.slice(0, headingIdx + 1);
     const after = lines.slice(laneEnd);
@@ -467,6 +546,19 @@ class TaskSorterSettingTab extends PluginSettingTab {
         })
       );
 
+    new Setting(containerEl)
+      .setName("Сортировать лейн после вставки")
+      .setDesc(
+        "Датируемые задачи сортируются по дате (📅/⏳/🛫, ближайшие сверху, без даты — в конец). " +
+          "Задачи без даты сортируются по алфавиту. Если выключить — новые задачи просто добавляются в конец списка."
+      )
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.settings.sortInsertedTasks).onChange(async (value) => {
+          this.plugin.settings.sortInsertedTasks = value;
+          await this.plugin.saveSettings();
+        })
+      );
+
     const totalCopied = Object.values(this.plugin.settings.scanCache).reduce(
       (sum, e) => sum + e.copied.length,
       0
@@ -477,7 +569,14 @@ class TaskSorterSettingTab extends PluginSettingTab {
       .setDesc(
         `Плагин запоминает, какие задачи уже скопированы из каждого файла, чтобы не дублировать их при повторном скане. ` +
           `Сейчас в кэше: ${Object.keys(this.plugin.settings.scanCache).length} файл(ов), ${totalCopied} задач(и) отмечено как скопированные. ` +
+          `Записи об удалённых файлах чистятся автоматически при каждом полном скане. ` +
           `Сброс приведёт к повторному копированию всех подходящих задач при следующем скане.`
+      )
+      .addButton((btn) =>
+        btn.setButtonText("Очистить удалённые файлы").onClick(async () => {
+          await this.plugin.cleanupCache();
+          this.display();
+        })
       )
       .addButton((btn) =>
         btn.setButtonText("Сбросить кэш").onClick(async () => {
