@@ -1,6 +1,6 @@
 {
-  "id": "denze1l-kanban-task-sorter",
-  "name": "Denze1l Kanban Task Sorter",
+  "id": "kanban-task-sorter",
+  "name": "Kanban Task Sorter",
   "version": "1.0.0",
   "minAppVersion": "1.0.0",
   "description": "Сканирует хранилище, находит незаписанные задачи и распределяет их по канбан-доскам: без даты — в Sort первой доски, с датой — в Sort второй доски.",

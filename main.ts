@@ -397,7 +397,7 @@ class TaskSorterSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
 
-    containerEl.createEl("h2", { text: "Denze1l Kanban Task Sorter — настройки" });
+    containerEl.createEl("h2", { text: "Kanban Task Sorter — настройки" });
 
     containerEl.createEl("p", {
       text:

@@ -1,4 +1,4 @@
-# Denze1l Kanban Task Sorter
+# Kanban Task Sorter
 
 Плагин для [Obsidian](https://obsidian.md), который копирует невыполненные
 задачи (`- [ ] ...`) из любых заметок хранилища в две канбан-доски:
@@ -29,10 +29,10 @@
 
 1. Скачайте `main.js` и `manifest.json` из последнего
    [релиза](../../releases/latest)
-2. Создайте папку `<ваше_хранилище>/.obsidian/plugins/denze1l-kanban-task-sorter/`
+2. Создайте папку `<ваше_хранилище>/.obsidian/plugins/kanban-task-sorter/`
    и положите туда оба файла
 3. Перезапустите Obsidian → Настройки → Сторонние плагины → включите
-   **Denze1l Kanban Task Sorter**
+   **Kanban Task Sorter**
 
 ### Через BRAT
 
